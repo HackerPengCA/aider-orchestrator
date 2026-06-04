@@ -48,6 +48,11 @@ class Sandbox:
         print(f"\n  ▶ 执行: {command}")
         print(f"  📁 目录: {work_dir}")
 
+        import os
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+
         result = subprocess.run(
             command,
             shell=True,
@@ -57,6 +62,7 @@ class Sandbox:
             timeout=COMMAND_TIMEOUT,
             encoding="utf-8",
             errors="replace",
+            env=env,
         )
         if result.stdout:
             print(f"  stdout: {result.stdout[:500]}")

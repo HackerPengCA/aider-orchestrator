@@ -180,28 +180,30 @@ def main():
 
 def resolve_task(task: str) -> str:
     """
-    如果输入是文件路径，读取文件内容作为任务。
-    支持纯路径，或"说明文字 + 路径"混合输入。
+    如果输入包含文件路径，读取文件内容注入到任务中。
+    支持纯路径、说明文字+路径、冒号分隔等各种写法。
     """
-    # 提取输入中所有看起来像路径的部分
     import re
-    # 匹配 Windows 路径（带盘符）或相对路径
-    path_pattern = re.compile(r'[A-Za-z]:\\[^\s"\']+|\.{0,2}[/\\][^\s"\']+')
+    # 匹配 Windows 绝对路径（含中文目录）
+    path_pattern = re.compile(r'[A-Za-z]:[\\\/][^\s,，。；;]+')
     matches = path_pattern.findall(task)
 
     loaded = []
+    remaining_task = task
     for match in matches:
+        # 去掉末尾可能粘连的标点
+        match = match.rstrip('，。；:：,.')
         p = Path(match)
         if p.exists() and p.is_file():
             content = p.read_text(encoding="utf-8", errors="replace")
             loaded.append(f"[文件：{p.name}]\n{content}")
-            task = task.replace(match, "").strip()
+            remaining_task = remaining_task.replace(match, "").strip().strip(':：').strip()
             print(f"  📄 已加载文件：{p} ({len(content)} 字符)")
 
     if loaded:
         file_context = "\n\n---\n\n".join(loaded)
-        if task:
-            return f"{task}\n\n以下是相关文件内容：\n\n{file_context}"
+        if remaining_task:
+            return f"{remaining_task}\n\n以下是相关文件内容：\n\n{file_context}"
         else:
             return f"以下是任务文件内容，请按其中的计划执行：\n\n{file_context}"
 

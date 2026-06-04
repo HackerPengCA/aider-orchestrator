@@ -10,7 +10,7 @@ Orchestrator 配置
 LLM_BASE_URL = "http://localhost:8081/v1"
 LLM_API_KEY = "none"
 LLM_MODEL = "openai/qwen3.6-27b"
-LLM_TIMEOUT = 300
+LLM_TIMEOUT = 600  # 流式模式下为单次 chunk 超时，LLM 思考时间不受此限制
 
 # Aider 启动参数
 AIDER_ARGS = [

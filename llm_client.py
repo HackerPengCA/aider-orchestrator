@@ -4,12 +4,17 @@
 """
 
 import json
+import re
+import sys
 import requests
 from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_TIMEOUT
 
 
-def chat(messages: list[dict], temperature: float = 0.2) -> str:
-    """发送对话请求，返回模型回复文本"""
+def chat(messages: list[dict], temperature: float = 0.2, label: str = "") -> str:
+    """
+    流式请求 LLM，实时显示进度点，避免长思考时 TCP 超时。
+    自动过滤 <think>...</think> 块，只返回最终答案。
+    """
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type": "application/json",
@@ -18,16 +23,56 @@ def chat(messages: list[dict], temperature: float = 0.2) -> str:
         "model": LLM_MODEL,
         "messages": messages,
         "temperature": temperature,
-        "stream": False,
+        "stream": True,
     }
-    resp = requests.post(
+
+    if label:
+        print(f"  🤔 {label} ", end="", flush=True)
+    else:
+        print(f"  🤔 Thinking ", end="", flush=True)
+
+    full_text = ""
+    token_count = 0
+    in_think = False
+
+    with requests.post(
         f"{LLM_BASE_URL}/chat/completions",
         headers=headers,
         json=payload,
+        stream=True,
         timeout=LLM_TIMEOUT,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode("utf-8")
+            if not line.startswith("data: "):
+                continue
+            data = line[6:]
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+                delta = chunk["choices"][0]["delta"].get("content", "")
+                if delta:
+                    full_text += delta
+                    token_count += 1
+                    # 每 50 个 token 显示一个进度点
+                    if token_count % 50 == 0:
+                        # 判断是否在 thinking 模式
+                        if "<think>" in full_text and "</think>" not in full_text:
+                            print(".", end="", flush=True)
+                        else:
+                            print("▪", end="", flush=True)
+            except Exception:
+                continue
+
+    print(f" ({token_count} tokens)", flush=True)
+
+    # 去掉 <think>...</think> 块，只保留答案
+    answer = re.sub(r"<think>.*?</think>", "", full_text, flags=re.DOTALL).strip()
+    return answer if answer else full_text
 
 
 def make_plan(task: str, project_path: str, file_list: list[str]) -> list[dict]:
@@ -69,7 +114,7 @@ def make_plan(task: str, project_path: str, file_list: list[str]) -> list[dict]:
             ),
         },
     ]
-    raw = chat(messages, temperature=0.1)
+    raw = chat(messages, temperature=0.1, label="Generating plan")
     # 提取 JSON（模型可能会在前后加文字）
     start = raw.find("[")
     end = raw.rfind("]") + 1
@@ -114,7 +159,7 @@ def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[
             ),
         },
     ]
-    raw = chat(messages, temperature=0.1)
+    raw = chat(messages, temperature=0.1, label="Expanding analysis")
     start = raw.find("[")
     end = raw.rfind("]") + 1
     if start == -1 or end == 0:
@@ -160,7 +205,7 @@ def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: 
             ),
         },
     ]
-    raw = chat(messages, temperature=0.1)
+    raw = chat(messages, temperature=0.1, label="Analyzing result")
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start == -1 or end == 0:

@@ -47,10 +47,14 @@ def make_plan(task: str, project_path: str, file_list: list[str]) -> list[dict]:
         {
             "role": "system",
             "content": (
-                "You are a software engineering planner. "
+                "You are a software engineering planner running on Windows. "
                 "Break down the user's task into ordered steps. "
                 "Each step must be one of: 'code' (write/modify code via Aider), "
                 "'command' (run a shell command), or 'analysis' (analyze results and decide next action). "
+                "IMPORTANT: Use Windows commands only. "
+                "Use 'type' instead of 'cat', 'dir' instead of 'ls', "
+                "'findstr' instead of 'grep', 'del' instead of 'rm', 'where' instead of 'which'. "
+                "Use Python for file reading when possible (e.g. python -c \"print(open('file').read())\"). "
                 "Return ONLY a JSON array of steps, no explanation. "
                 "Example: [{\"step\":1,\"type\":\"command\",\"description\":\"Install deps\","
                 "\"command\":\"pip install -r requirements.txt\",\"files\":[]}]"
@@ -74,7 +78,51 @@ def make_plan(task: str, project_path: str, file_list: list[str]) -> list[dict]:
     return json.loads(raw[start:end])
 
 
-def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: str) -> dict:
+def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[dict]) -> list[dict]:
+    """
+    将 analysis 步骤展开为具体可执行步骤
+    把前面所有步骤的输出传入，让 LLM 基于实际内容生成后续步骤
+    """
+    context_str = "\n\n".join(
+        f"Step {c['step']} ({c['description']}):\n"
+        f"Command: {c['command']}\n"
+        f"Output: {c['stdout']}\n"
+        f"Error: {c['stderr']}"
+        for c in context
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a software engineering planner running on Windows. "
+                "Based on the accumulated context from previous steps, generate concrete next steps. "
+                "Use Windows commands only (type, dir, findstr, python, pip, etc). "
+                "Return ONLY a JSON array of steps. "
+                "Each step: {\"step\": N, \"type\": \"command\"|\"code\", \"description\": \"...\", "
+                "\"command\": \"...\", \"files\": []}. "
+                "Be specific and actionable."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Task: {task}\n\n"
+                f"Analysis goal: {step.get('description')}\n\n"
+                f"Previous steps output:\n{context_str}\n\n"
+                f"Remaining planned steps: {json.dumps(remaining, ensure_ascii=False)}\n\n"
+                "Generate the concrete steps to execute next."
+            ),
+        },
+    ]
+    raw = chat(messages, temperature=0.1)
+    start = raw.find("[")
+    end = raw.rfind("]") + 1
+    if start == -1 or end == 0:
+        return []
+    return json.loads(raw[start:end])
+
+
+def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: str, context: list[dict] = None) -> dict:
     """
     分析执行结果，决定下一步行动
     返回：
@@ -88,10 +136,15 @@ def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: 
         {
             "role": "system",
             "content": (
-                "You are a software engineering agent. "
+                "You are a software engineering agent running on Windows. "
                 "Analyze the execution result of a step and decide the next action. "
-                "Return ONLY JSON with fields: action (next/retry/update_plan/done/fail), "
-                "reason (string), updated_steps (array, only if action=update_plan). "
+                "Return ONLY JSON with fields: "
+                "action (next/retry/update_plan/done/fail), "
+                "reason (string), "
+                "updated_step (object, the corrected step to retry with, only if action=retry), "
+                "updated_steps (array, only if action=update_plan). "
+                "IMPORTANT: This is Windows. Use Windows commands (type, dir, findstr, del, copy, move, where) "
+                "instead of Unix commands (cat, ls, grep, rm, cp, mv, which). "
                 "Use 'done' only if the entire task is complete. "
                 "Use 'fail' only if the error is unrecoverable."
             ),

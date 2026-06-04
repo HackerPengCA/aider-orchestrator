@@ -1,5 +1,10 @@
 """
 Orchestrator 配置
+
+架构说明：
+  执行环境：Windows（Orchestrator / Aider / Shell 命令全在 Windows 上跑）
+  LLM：     MacOS 远程（llama.cpp + Qwen3），通过 SSH 隧道访问
+  端点：    http://localhost:8081/v1
 """
 
 LLM_BASE_URL = "http://localhost:8081/v1"

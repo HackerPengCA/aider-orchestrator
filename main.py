@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from sandbox import Sandbox
-from llm_client import make_plan, analyze_result
+from llm_client import make_plan, analyze_result, expand_analysis
 from executor import run_step
 from config import MAX_RETRIES
 
@@ -53,15 +53,34 @@ def run_task(task: str, sandbox: Sandbox):
         print("已取消。")
         return
 
-    # 3. 逐步执行
+    # 3. 逐步执行，维护累积上下文
     step_index = 0
     retries = 0
+    # 每步输出存入 context，供后续步骤和分析使用
+    context: list[dict] = []
 
     while step_index < len(plan):
         step = plan[step_index]
         print(f"\n{'='*60}")
         print(f"▶ 步骤 {step['step']}/{len(plan)}: {step['description']}")
         print(f"{'='*60}")
+
+        # analysis 步骤：把累积上下文传给 LLM，让它生成具体后续步骤
+        if step.get("type") == "analysis":
+            try:
+                new_steps = expand_analysis(task, step, context, plan[step_index+1:])
+            except Exception as e:
+                print(f"⚠️  Analysis 展开失败: {e}，跳过")
+                step_index += 1
+                retries = 0
+                continue
+            if new_steps:
+                plan = plan[:step_index] + new_steps + plan[step_index+1:]
+                print(f"  📝 Analysis 展开为 {len(new_steps)} 个具体步骤")
+            else:
+                step_index += 1
+            retries = 0
+            continue
 
         try:
             stdout, stderr, rc = run_step(step, sandbox)
@@ -70,10 +89,20 @@ def run_task(task: str, sandbox: Sandbox):
             stdout = ""
             rc = 1
 
+        # 记录本步骤输出到 context
+        context.append({
+            "step": step.get("step"),
+            "description": step.get("description"),
+            "command": step.get("command", ""),
+            "stdout": stdout[:3000],
+            "stderr": stderr[:1000],
+            "rc": rc,
+        })
+
         # 4. 分析结果
         remaining = plan[step_index + 1:]
         try:
-            decision = analyze_result(task, remaining, step, stdout, stderr)
+            decision = analyze_result(task, remaining, step, stdout, stderr, context)
         except Exception as e:
             print(f"⚠️  结果分析失败: {e}，继续下一步")
             decision = {"action": "next", "reason": "分析失败，跳过"}
@@ -93,12 +122,14 @@ def run_task(task: str, sandbox: Sandbox):
             if retries >= MAX_RETRIES:
                 print(f"\n❌ 已重试 {MAX_RETRIES} 次，放弃。")
                 break
+            updated_step = decision.get("updated_step")
+            if updated_step:
+                plan[step_index] = updated_step
+                print(f"  📝 步骤已更新: {updated_step.get('command') or updated_step.get('description')}")
             print(f"  🔄 重试 ({retries}/{MAX_RETRIES})...")
-            # 不移动 step_index，重试当前步骤
         elif action == "update_plan":
             updated = decision.get("updated_steps", [])
             if updated:
-                # 替换剩余步骤
                 plan = plan[:step_index + 1] + updated
                 print(f"  📝 Plan 已更新，新增 {len(updated)} 个步骤")
             step_index += 1
@@ -137,13 +168,44 @@ def main():
     # 主循环
     while True:
         print()
-        task = input("📝 输入任务（输入 exit 退出）: ").strip()
+        task = input("📝 输入任务或文件路径（exit 退出）: ").strip().strip('"')
         if task.lower() in ("exit", "quit", "q"):
             print("再见！")
             break
         if not task:
             continue
+        task = resolve_task(task)
         run_task(task, sandbox)
+
+
+def resolve_task(task: str) -> str:
+    """
+    如果输入是文件路径，读取文件内容作为任务。
+    支持纯路径，或"说明文字 + 路径"混合输入。
+    """
+    # 提取输入中所有看起来像路径的部分
+    import re
+    # 匹配 Windows 路径（带盘符）或相对路径
+    path_pattern = re.compile(r'[A-Za-z]:\\[^\s"\']+|\.{0,2}[/\\][^\s"\']+')
+    matches = path_pattern.findall(task)
+
+    loaded = []
+    for match in matches:
+        p = Path(match)
+        if p.exists() and p.is_file():
+            content = p.read_text(encoding="utf-8", errors="replace")
+            loaded.append(f"[文件：{p.name}]\n{content}")
+            task = task.replace(match, "").strip()
+            print(f"  📄 已加载文件：{p} ({len(content)} 字符)")
+
+    if loaded:
+        file_context = "\n\n---\n\n".join(loaded)
+        if task:
+            return f"{task}\n\n以下是相关文件内容：\n\n{file_context}"
+        else:
+            return f"以下是任务文件内容，请按其中的计划执行：\n\n{file_context}"
+
+    return task
 
 
 if __name__ == "__main__":

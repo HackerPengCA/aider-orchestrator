@@ -10,7 +10,7 @@ import sys
 import platform
 from pathlib import Path
 from sandbox import Sandbox
-from config import AIDER_ARGS, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
+from config import AIDER_ARGS, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, AIDER_TIMEOUT
 
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -106,7 +106,7 @@ def _run_code_step(step: dict, sandbox: Sandbox) -> tuple[str, str, int]:
         cwd=str(sandbox.project_path),
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=AIDER_TIMEOUT,
         encoding="utf-8",
         errors="replace",
     )

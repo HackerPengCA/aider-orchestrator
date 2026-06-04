@@ -1,32 +1,33 @@
 """
-Orchestrator 配置
+Orchestrator Configuration
 
-架构说明：
-  执行环境：Windows（Orchestrator / Aider / Shell 命令全在 Windows 上跑）
-  LLM：     MacOS 远程（llama.cpp + Qwen3），通过 SSH 隧道访问
-  端点：    http://localhost:8081/v1
+Architecture:
+  Execution env : Windows (Orchestrator / Aider / shell commands all run on Windows)
+  LLM           : macOS remote (llama.cpp + Qwen3), accessed via SSH tunnel
+  Endpoint      : http://localhost:8081/v1
 """
 
 LLM_BASE_URL = "http://localhost:8081/v1"
-LLM_API_KEY = "none"
-LLM_MODEL = "openai/qwen3.6-27b"
-LLM_TIMEOUT = 600  # 流式模式下为单次 chunk 超时，LLM 思考时间不受此限制
+LLM_API_KEY  = "none"
+LLM_MODEL    = "openai/qwen3.6-27b"
 
-# Aider 调用超时（写代码比分析耗时更长）
-AIDER_TIMEOUT = 7200  # 2 小时，Qwen3 长上下文生成可能很慢
+# Streaming mode: this is per-chunk idle timeout, NOT total response time.
+# As long as tokens keep flowing the connection stays alive.
+LLM_TIMEOUT  = 600
 
-# Aider 启动参数
+# Aider subprocess timeout (code generation can be very slow on local LLM)
+AIDER_TIMEOUT = 7200  # 2 hours
+
+# Aider CLI flags passed every invocation
 AIDER_ARGS = [
     "--no-stream",
-    "--timeout", "7200",   # 单次 LLM 请求超时，与 AIDER_TIMEOUT 一致
-    "--map-tokens", "0",   # 关掉 repo map，减少输入 token，加快速度
+    "--timeout", "7200",    # Aider's own LLM request timeout
+    "--map-tokens", "0",    # Disable repo map — files are passed explicitly
     "--max-chat-history-tokens", "200000",
-    "--edit-format", "diff",
-    "--yes",               # 自动确认，不交互
+    # edit-format omitted: let Aider auto-select (whole for new files, diff for edits)
+    "--yes",                # Non-interactive: auto-confirm all changes
 ]
 
-# 安全：最大重试次数
-MAX_RETRIES = 5
-
-# 安全：单次命令最大执行时间（秒）
-COMMAND_TIMEOUT = 120
+# Safety limits
+MAX_RETRIES     = 5    # Max retries per step before giving up
+COMMAND_TIMEOUT = 300  # Max seconds for a single shell command (increased for long backtests)

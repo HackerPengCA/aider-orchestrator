@@ -24,6 +24,7 @@ def chat(messages: list[dict], temperature: float = 0.2, label: str = "") -> str
         "messages": messages,
         "temperature": temperature,
         "stream": True,
+        "max_tokens": 4096,  # Plan/analysis output should never need more than this
     }
 
     if label:
@@ -108,6 +109,7 @@ def make_plan(task: str, project_path: str, file_list: list[str]) -> list[dict]:
         {
             "role": "user",
             "content": (
+                f"/no_think\n"
                 f"Project path: {project_path}\n"
                 f"Files:\n{file_summary}\n\n"
                 f"Task: {task}"
@@ -151,6 +153,7 @@ def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[
         {
             "role": "user",
             "content": (
+                f"/no_think\n"
                 f"Task: {task}\n\n"
                 f"Analysis goal: {step.get('description')}\n\n"
                 f"Previous steps output:\n{context_str}\n\n"
@@ -197,7 +200,8 @@ def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: 
         {
             "role": "user",
             "content": (
-                f"Task: {task}\n\n"
+                f"/no_think\n"
+                f"Task: {task[:500]}\n\n"  # Truncate task to avoid bloating context
                 f"Current step: {json.dumps(step, ensure_ascii=False)}\n\n"
                 f"stdout:\n{output[:3000]}\n\n"
                 f"stderr:\n{error[:2000]}\n\n"

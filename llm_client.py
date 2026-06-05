@@ -24,7 +24,6 @@ def chat(messages: list[dict], temperature: float = 0.2, label: str = "") -> str
         "messages": messages,
         "temperature": temperature,
         "stream": True,
-        "max_tokens": 4096,  # Plan/analysis output should never need more than this
     }
 
     if label:

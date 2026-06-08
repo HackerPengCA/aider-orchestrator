@@ -104,10 +104,7 @@ def _run_code_step(step: dict, sandbox: Sandbox) -> tuple[str, str, int]:
     result = subprocess.run(
         cmd,
         cwd=str(sandbox.project_path),
-        capture_output=True,
-        text=True,
+        capture_output=False,   # Show Aider output directly in console
         timeout=AIDER_TIMEOUT,
-        encoding="utf-8",
-        errors="replace",
     )
-    return result.stdout, result.stderr, result.returncode
+    return "", "", result.returncode

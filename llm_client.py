@@ -6,11 +6,30 @@
 import json
 import re
 import sys
+import time
 import requests
-from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_TIMEOUT
+from config import (
+    ANALYSIS_MAX_TOKENS,
+    LLM_BASE_URL,
+    LLM_API_KEY,
+    LLM_MODEL,
+    LLM_TIMEOUT,
+    LLM_TOTAL_TIMEOUT,
+    PLAN_MAX_TOKENS,
+)
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
-def chat(messages: list[dict], temperature: float = 0.2, label: str = "") -> str:
+def chat(
+    messages: list[dict],
+    temperature: float = 0.2,
+    label: str = "",
+    max_tokens: int = ANALYSIS_MAX_TOKENS,
+) -> str:
     """
     流式请求 LLM，实时显示进度点，避免长思考时 TCP 超时。
     自动过滤 <think>...</think> 块，只返回最终答案。
@@ -24,6 +43,7 @@ def chat(messages: list[dict], temperature: float = 0.2, label: str = "") -> str
         "messages": messages,
         "temperature": temperature,
         "stream": True,
+        "max_tokens": max_tokens,
     }
 
     if label:
@@ -33,42 +53,63 @@ def chat(messages: list[dict], temperature: float = 0.2, label: str = "") -> str
 
     full_text = ""
     token_count = 0
-    in_think = False
+    started_at = time.monotonic()
+    finish_reason = None
 
-    with requests.post(
-        f"{LLM_BASE_URL}/chat/completions",
-        headers=headers,
-        json=payload,
-        stream=True,
-        timeout=LLM_TIMEOUT,
-    ) as resp:
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            line = line.decode("utf-8")
-            if not line.startswith("data: "):
-                continue
-            data = line[6:]
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-                delta = chunk["choices"][0]["delta"].get("content", "")
-                if delta:
-                    full_text += delta
-                    token_count += 1
-                    # 每 50 个 token 显示一个进度点
-                    if token_count % 50 == 0:
-                        # 判断是否在 thinking 模式
-                        if "<think>" in full_text and "</think>" not in full_text:
-                            print(".", end="", flush=True)
-                        else:
-                            print("▪", end="", flush=True)
-            except Exception:
-                continue
+    try:
+        with requests.post(
+            f"{LLM_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            stream=True,
+            timeout=LLM_TIMEOUT,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                elapsed = time.monotonic() - started_at
+                if elapsed > LLM_TOTAL_TIMEOUT:
+                    raise TimeoutError(
+                        f"{label or 'LLM request'} exceeded the "
+                        f"{LLM_TOTAL_TIMEOUT}s total limit"
+                    )
+                if not line:
+                    continue
+                line = line.decode("utf-8")
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    choice = chunk["choices"][0]
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    delta = choice["delta"].get("content", "")
+                    if delta:
+                        full_text += delta
+                        token_count += 1
+                        if token_count % 100 == 0:
+                            elapsed = int(time.monotonic() - started_at)
+                            print(
+                                f"\r  🤖 {label or 'Thinking'}: "
+                                f"{token_count} chunks, {elapsed}s",
+                                end="",
+                                flush=True,
+                            )
+                except (KeyError, TypeError, json.JSONDecodeError):
+                    continue
+    except requests.Timeout as exc:
+        elapsed = int(time.monotonic() - started_at)
+        raise TimeoutError(
+            f"{label or 'LLM request'} timed out after {elapsed}s without data"
+        ) from exc
 
-    print(f" ({token_count} tokens)", flush=True)
+    elapsed = int(time.monotonic() - started_at)
+    print(
+        f"\r  🤖 {label or 'Thinking'}: finished in {elapsed}s "
+        f"({token_count} chunks, reason={finish_reason or 'done'})",
+        flush=True,
+    )
 
     # 去掉 <think>...</think> 块，只保留答案
     answer = re.sub(r"<think>.*?</think>", "", full_text, flags=re.DOTALL).strip()
@@ -96,6 +137,9 @@ def make_plan(task: str, project_path: str, file_list: list[str]) -> list[dict]:
                 "Break down the user's task into ordered steps. "
                 "Each step must be one of: 'code' (write/modify code via Aider), "
                 "'command' (run a shell command), or 'analysis' (analyze results and decide next action). "
+                "For every code step, include the target file and all existing source files "
+                "the coder must inspect in the 'files' array. Never plan placeholder or mock "
+                "implementations when the project already contains the real implementation. "
                 "IMPORTANT: Use Windows commands only. "
                 "Use 'type' instead of 'cat', 'dir' instead of 'ls', "
                 "'findstr' instead of 'grep', 'del' instead of 'rm', 'where' instead of 'which'. "
@@ -115,7 +159,12 @@ def make_plan(task: str, project_path: str, file_list: list[str]) -> list[dict]:
             ),
         },
     ]
-    raw = chat(messages, temperature=0.1, label="Generating plan")
+    raw = chat(
+        messages,
+        temperature=0.1,
+        label="Generating plan",
+        max_tokens=PLAN_MAX_TOKENS,
+    )
     # 提取 JSON（模型可能会在前后加文字）
     start = raw.find("[")
     end = raw.rfind("]") + 1
@@ -146,6 +195,8 @@ def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[
                 "Return ONLY a JSON array of steps. "
                 "Each step: {\"step\": N, \"type\": \"command\"|\"code\", \"description\": \"...\", "
                 "\"command\": \"...\", \"files\": []}. "
+                "For code steps, list the target plus all existing implementation files "
+                "that must be inspected. Do not use placeholders when real project code exists. "
                 "Be specific and actionable."
             ),
         },
@@ -161,7 +212,12 @@ def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[
             ),
         },
     ]
-    raw = chat(messages, temperature=0.1, label="Expanding analysis")
+    raw = chat(
+        messages,
+        temperature=0.1,
+        label="Expanding analysis",
+        max_tokens=ANALYSIS_MAX_TOKENS,
+    )
     start = raw.find("[")
     end = raw.rfind("]") + 1
     if start == -1 or end == 0:
@@ -169,7 +225,15 @@ def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[
     return json.loads(raw[start:end])
 
 
-def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: str, context: list[dict] = None) -> dict:
+def analyze_result(
+    task: str,
+    plan: list[dict],
+    step: dict,
+    output: str,
+    error: str,
+    return_code: int,
+    context: list[dict] = None,
+) -> dict:
     """
     分析执行结果，决定下一步行动
     返回：
@@ -193,7 +257,9 @@ def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: 
                 "IMPORTANT: This is Windows. Use Windows commands (type, dir, findstr, del, copy, move, where) "
                 "instead of Unix commands (cat, ls, grep, rm, cp, mv, which). "
                 "Use 'done' only if the entire task is complete. "
-                "Use 'fail' only if the error is unrecoverable."
+                "Use 'fail' only if the error is unrecoverable. "
+                "A return code of 0 means the command completed successfully. "
+                "Never retry solely because stdout is truncated or lacks a completion line."
             ),
         },
         {
@@ -202,13 +268,19 @@ def analyze_result(task: str, plan: list[dict], step: dict, output: str, error: 
                 f"/no_think\n"
                 f"Task: {task[:500]}\n\n"  # Truncate task to avoid bloating context
                 f"Current step: {json.dumps(step, ensure_ascii=False)}\n\n"
+                f"Return code: {return_code}\n\n"
                 f"stdout:\n{output[:3000]}\n\n"
                 f"stderr:\n{error[:2000]}\n\n"
                 f"Remaining plan: {json.dumps(plan, ensure_ascii=False)}"
             ),
         },
     ]
-    raw = chat(messages, temperature=0.1, label="Analyzing result")
+    raw = chat(
+        messages,
+        temperature=0.1,
+        label="Analyzing result",
+        max_tokens=ANALYSIS_MAX_TOKENS,
+    )
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start == -1 or end == 0:

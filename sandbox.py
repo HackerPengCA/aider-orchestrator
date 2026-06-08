@@ -65,7 +65,14 @@ class Sandbox:
             env=env,
         )
         if result.stdout:
-            print(f"  stdout: {result.stdout[:500]}")
+            preview = result.stdout
+            if len(preview) > 1000:
+                preview = (
+                    preview[:500]
+                    + "\n  ... [output truncated] ...\n"
+                    + preview[-500:]
+                )
+            print(f"  stdout: {preview}")
         if result.stderr:
             print(f"  stderr: {result.stderr[:500]}")
         print(f"  返回码: {result.returncode}")

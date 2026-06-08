@@ -99,16 +99,29 @@ def run_task(task: str, sandbox: Sandbox):
             "rc": rc,
         })
 
-        # 4. 分析结果
-        remaining = plan[step_index + 1:]
-        try:
-            decision = analyze_result(task, remaining, step, stdout, stderr, context)
-        except Exception as e:
-            print(f"⚠️  结果分析失败: {e}，继续下一步")
-            decision = {"action": "next", "reason": "分析失败，跳过"}
+        # Successful steps are deterministic. Adaptive reasoning belongs in
+        # explicit analysis steps, which avoids costly false retries.
+        if rc == 0:
+            decision = {
+                "action": "next",
+                "reason": "步骤返回码为 0，执行成功。",
+            }
+        else:
+            remaining = plan[step_index + 1:]
+            try:
+                decision = analyze_result(
+                    task, remaining, step, stdout, stderr, rc, context
+                )
+            except Exception as e:
+                print(f"⚠️  结果分析失败: {e}，停止当前任务")
+                decision = {
+                    "action": "fail",
+                    "reason": f"失败步骤无法分析: {e}",
+                }
 
         action = decision.get("action", "next")
         reason = decision.get("reason", "")
+
         print(f"\n  💡 决策: {action} — {reason}")
 
         if action == "done":

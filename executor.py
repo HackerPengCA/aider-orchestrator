@@ -100,11 +100,28 @@ def _run_code_step(step: dict, sandbox: Sandbox) -> tuple[str, str, int]:
 
     print(f"\n  🤖 调用 Aider: {description}")
     print(f"  📄 文件: {abs_files}")
+    print("  Aider 正在流式生成；较大的新文件可能需要几分钟。")
 
-    result = subprocess.run(
-        cmd,
-        cwd=str(sandbox.project_path),
-        capture_output=False,   # Show Aider output directly in console
-        timeout=AIDER_TIMEOUT,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(sandbox.project_path),
+            capture_output=False,
+            timeout=AIDER_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        empty_files = [
+            path for path in abs_files
+            if Path(path).exists() and Path(path).stat().st_size == 0
+        ]
+        detail = f"；仍为空的文件: {empty_files}" if empty_files else ""
+        return "", f"Aider 在 {AIDER_TIMEOUT} 秒后超时{detail}", 1
+
+    if result.returncode != 0:
+        empty_files = [
+            path for path in abs_files
+            if Path(path).exists() and Path(path).stat().st_size == 0
+        ]
+        detail = f"；仍为空的文件: {empty_files}" if empty_files else ""
+        return "", f"Aider 退出码 {result.returncode}{detail}", result.returncode
     return "", "", result.returncode

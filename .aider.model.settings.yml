@@ -1,0 +1,6 @@
+- name: openai/qwen3.6-27b
+  extra_params:
+    max_tokens: 8192
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false

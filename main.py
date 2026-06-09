@@ -30,7 +30,25 @@ def print_plan(plan: list[dict]):
     print()
 
 
-def run_task(task: str, sandbox: Sandbox):
+def read_key_files(sandbox: Sandbox, file_list: list[str]) -> dict[str, str]:
+    """
+    注入 strategy.py、backtest.py 和现有 runner 脚本，
+    让 LLM 生成脚本时直接复用现有模块，而不是从头重写回测逻辑。
+    """
+    PRIORITY = ["strategy.py", "backtest.py", "robustness_a_class_runner.py"]
+    contents: dict[str, str] = {}
+    for rel in file_list:
+        if Path(rel).name in PRIORITY:
+            abs_path = sandbox.project_path / rel
+            try:
+                text = abs_path.read_text(encoding="utf-8", errors="replace")
+                contents[rel] = text
+            except OSError:
+                pass
+    return contents
+
+
+def run_task(task: str, sandbox: Sandbox, yes: bool = False):
     print(f"\n🎯 任务：{task}")
     print(f"📁 项目：{sandbox.project_path}\n")
 
@@ -38,20 +56,26 @@ def run_task(task: str, sandbox: Sandbox):
     files = sandbox.list_files()
     print(f"📂 发现 {len(files)} 个文件")
 
-    # 2. 生成 Plan
+    # 2. 读取关键文件内容注入规划上下文
+    file_contents = read_key_files(sandbox, files)
+    if file_contents:
+        print(f"📖 已读取 {len(file_contents)} 个文件注入上下文：{list(file_contents.keys())}")
+
+    # 3. 生成 Plan
     print("\n⏳ 正在生成执行计划...")
     try:
-        plan = make_plan(task, str(sandbox.project_path), files)
+        plan = make_plan(task, str(sandbox.project_path), files, file_contents)
     except Exception as e:
         print(f"❌ Plan 生成失败: {e}")
         return
     print_plan(plan)
 
     # 确认执行
-    confirm = input("确认执行？[Y/n] ").strip().lower()
-    if confirm == "n":
-        print("已取消。")
-        return
+    if not yes:
+        confirm = input("确认执行？[Y/n] ").strip().lower()
+        if confirm == "n":
+            print("已取消。")
+            return
 
     # 3. 逐步执行，维护累积上下文
     step_index = 0
@@ -83,7 +107,7 @@ def run_task(task: str, sandbox: Sandbox):
             continue
 
         try:
-            stdout, stderr, rc = run_step(step, sandbox)
+            stdout, stderr, rc = run_step(step, sandbox, file_contents=file_contents, context=context)
         except Exception as e:
             stderr = str(e)
             stdout = ""
@@ -161,6 +185,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Aider Orchestrator")
     parser.add_argument("--project", "-p", help="项目目录路径")
+    parser.add_argument("--yes", "-y", action="store_true", help="跳过执行确认")
     args = parser.parse_args()
 
     # 确定项目目录
@@ -188,7 +213,7 @@ def main():
         if not task:
             continue
         task = resolve_task(task)
-        run_task(task, sandbox)
+        run_task(task, sandbox, yes=args.yes)
 
 
 def resolve_task(task: str) -> str:
@@ -197,8 +222,8 @@ def resolve_task(task: str) -> str:
     支持纯路径、说明文字+路径、冒号分隔等各种写法。
     """
     import re
-    # 匹配 Windows 绝对路径（含中文目录）
-    path_pattern = re.compile(r'[A-Za-z]:[\\\/][^\s,，。；;]+')
+    # 匹配 Linux 绝对路径 (/foo/bar) 和 Windows 绝对路径 (C:\foo\bar)
+    path_pattern = re.compile(r'(?:[A-Za-z]:[\\\/][^\s,，。；;]+|\/[^\s,，。；;]+)')
     matches = path_pattern.findall(task)
 
     loaded = []

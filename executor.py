@@ -1,44 +1,33 @@
 """
 执行器：负责执行单个 plan 步骤
-- code: 调用 Aider 修改代码
-- command: 在沙盒内执行 shell 命令
+- script:   LLM 直接生成完整 Python 脚本，写入文件后执行（首选）
+- code:     调用 Aider 修改现有文件（仅用于改已有代码）
+- command:  在沙盒内执行 shell 命令
 - analysis: 纯分析，不执行
 """
 
 import subprocess
 import sys
-import platform
 from pathlib import Path
 from sandbox import Sandbox
 from config import AIDER_ARGS, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, AIDER_TIMEOUT
-
-IS_WINDOWS = platform.system() == "Windows"
-
-# Unix->Windows command mapping
-WIN_CMD_MAP = {
-    "cat ":   "type ",
-    "ls ":    "dir ",
-    "ls\n":   "dir\n",
-    "ls":     "dir",
-    "grep ":  "findstr ",
-    "rm ":    "del ",
-    "cp ":    "copy ",
-    "mv ":    "move ",
-    "mkdir ": "mkdir ",
-    "touch ": "type nul > ",
-    "which ": "where ",
-    "pwd":    "cd",
-    "echo ":  "echo ",
-}
+from llm_client import generate_script
 
 
-def run_step(step: dict, sandbox: Sandbox) -> tuple[str, str, int]:
+def run_step(
+    step: dict,
+    sandbox: Sandbox,
+    file_contents: dict[str, str] | None = None,
+    context: list[dict] | None = None,
+) -> tuple[str, str, int]:
     """
     执行一个步骤，返回 (stdout, stderr, returncode)
     """
     step_type = step.get("type", "command")
 
-    if step_type == "code":
+    if step_type == "script":
+        return _run_script_step(step, sandbox, file_contents=file_contents, context=context)
+    elif step_type == "code":
         return _run_code_step(step, sandbox)
     elif step_type == "command":
         return _run_command_step(step, sandbox)
@@ -48,24 +37,51 @@ def run_step(step: dict, sandbox: Sandbox) -> tuple[str, str, int]:
         return "", f"未知步骤类型: {step_type}", 1
 
 
-def _normalize_command(command: str) -> str:
-    """在 Windows 上自动替换 Unix 命令"""
-    if not IS_WINDOWS:
-        return command
-    for unix_cmd, win_cmd in WIN_CMD_MAP.items():
-        if command.strip().startswith(unix_cmd.strip()):
-            command = win_cmd + command[len(unix_cmd):]
-            break
-    # 路径分隔符：把 / 换成 \ （仅对路径部分）
-    return command
+def _run_script_step(
+    step: dict,
+    sandbox: Sandbox,
+    file_contents: dict[str, str] | None = None,
+    context: list[dict] | None = None,
+) -> tuple[str, str, int]:
+    """执行 script 步骤：若无内联 code，先调 LLM 生成脚本再执行"""
+    code = step.get("code", "").strip()
+    filename = step.get("filename", f"step_{step.get('step', 0)}.py")
+
+    if not code:
+        print(f"\n  🤖 生成脚本：{step.get('description', '')}")
+        try:
+            code = generate_script(
+                description=step.get("description", ""),
+                file_contents=file_contents or {},
+                context=context,
+            )
+        except Exception as e:
+            return "", f"脚本生成失败: {e}", 1
+        # strip markdown fences if model wraps in ```python ... ```
+        if code.startswith("```"):
+            code = "\n".join(
+                line for line in code.splitlines()
+                if not line.strip().startswith("```")
+            )
+
+    scripts_dir = sandbox.project_path / ".orch_scripts"
+    scripts_dir.mkdir(exist_ok=True)
+    script_path = scripts_dir / filename
+    sandbox.safe_write(str(script_path), code)
+    print(f"\n  📝 脚本已写入: {script_path}")
+
+    try:
+        return sandbox.run_command(f"PYTHONPATH={sandbox.project_path} python3 {script_path}")
+    except PermissionError as e:
+        return "", str(e), 1
+    except subprocess.TimeoutExpired:
+        return "", "脚本执行超时", 1
 
 
 def _run_command_step(step: dict, sandbox: Sandbox) -> tuple[str, str, int]:
     command = step.get("command", "")
     if not command:
         return "", "步骤缺少 command 字段", 1
-    command = _normalize_command(command)
-    step["command"] = command  # 更新 step，让 retry 用新命令
     try:
         stdout, stderr, rc = sandbox.run_command(command)
         return stdout, stderr, rc

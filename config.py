@@ -1,15 +1,20 @@
 """
 Orchestrator Configuration
 
-Architecture:
-  Execution env : Docker container (Linux)
-  LLM           : host machine (llama.cpp + Qwen3), accessed via host.docker.internal
-  Endpoint      : http://host.docker.internal:8081/v1
+LLM host/port/model are read from environment variables so the same image
+works on any machine without rebuilding.
+Set them in LocalLLM/.env or pass via docker compose environment.
 """
 
-LLM_BASE_URL = "http://host.docker.internal:8081/v1"
+import os
+
+_llm_host  = os.getenv("LLM_HOST",  "host.docker.internal")
+_llm_port  = os.getenv("LLM_PORT",  "8081")
+_llm_model = os.getenv("LLM_MODEL", "qwen3.6-27b")
+
+LLM_BASE_URL = f"http://{_llm_host}:{_llm_port}/v1"
 LLM_API_KEY  = "none"
-LLM_MODEL    = "openai/qwen3.6-27b"
+LLM_MODEL    = f"openai/{_llm_model}"
 AIDER_MODEL_SETTINGS_FILE = "/app/.aider.model.settings.yml"
 
 # Streaming mode: this is per-chunk idle timeout, NOT total response time.

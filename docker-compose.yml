@@ -1,0 +1,29 @@
+services:
+
+  # Autonomous coding agent (Plan → Execute → Analyze loop)
+  orchestrator:
+    build: .
+    stdin_open: true
+    tty: true
+    volumes:
+      - ${PROJECT_PATH:-../../btc-quant}:/projects/btc-quant
+    environment:
+      - LLM_HOST=${LLM_HOST:-host.docker.internal}
+      - LLM_PORT=${LLM_PORT:-8081}
+      - LLM_MODEL=${LLM_MODEL:-qwen3.6-27b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Interactive terminal agent (qwen-code)
+  qwen-code:
+    build: ../qwen-code
+    stdin_open: true
+    tty: true
+    volumes:
+      - ${PROJECT_PATH:-../../btc-quant}:/projects/btc-quant
+    environment:
+      - LLM_HOST=${LLM_HOST:-host.docker.internal}
+      - LLM_PORT=${LLM_PORT:-8081}
+      - LLM_MODEL=${LLM_MODEL:-qwen3.6-27b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

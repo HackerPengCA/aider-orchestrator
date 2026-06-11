@@ -32,13 +32,18 @@ def print_plan(plan: list[dict]):
 
 def read_key_files(sandbox: Sandbox, file_list: list[str]) -> dict[str, str]:
     """
-    注入 strategy.py、backtest.py 和现有 runner 脚本，
-    让 LLM 生成脚本时直接复用现有模块，而不是从头重写回测逻辑。
+    读取项目内的关键文件注入上下文，让 LLM 能复用已有模块。
+    优先读取：配置、核心逻辑、README 等通用重要文件。
     """
-    PRIORITY = ["strategy.py", "backtest.py", "robustness_a_class_runner.py"]
+    PRIORITY_NAMES = {
+        "config.py", "settings.py", "constants.py",
+        "strategy.py", "backtest.py",
+        "main.py", "app.py", "server.py",
+        "readme.md", "README.md",
+    }
     contents: dict[str, str] = {}
     for rel in file_list:
-        if Path(rel).name in PRIORITY:
+        if Path(rel).name in PRIORITY_NAMES:
             abs_path = sandbox.project_path / rel
             try:
                 text = abs_path.read_text(encoding="utf-8", errors="replace")

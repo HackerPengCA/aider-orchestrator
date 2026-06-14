@@ -26,6 +26,95 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
+PLAN_STEP_TYPES = {"script", "code", "command", "analysis"}
+DESCRIPTION_FIELDS = ("description", "task", "title", "action", "instruction", "name")
+
+
+def _extract_json(raw: str, expected_type: type):
+    """Extract the first complete JSON value of the requested type."""
+    decoder = json.JSONDecoder()
+    opening = "[" if expected_type is list else "{"
+
+    for match in re.finditer(re.escape(opening), raw):
+        try:
+            value, _ = decoder.raw_decode(raw[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, expected_type):
+            return value
+
+    finish_hint = ""
+    if raw.rstrip().endswith((",", ":", "\\", '"', "[", "{")):
+        finish_hint = " The response appears to have been truncated."
+    raise ValueError(
+        f"LLM did not return a complete JSON {expected_type.__name__}."
+        f"{finish_hint}\nRaw response:\n{raw[-2000:]}"
+    )
+
+
+def _normalize_plan_steps(value: object, *, start_at: int = 1) -> list[dict]:
+    """Normalize small-model plan variants into the executor's stable schema."""
+    if not isinstance(value, list):
+        raise ValueError("LLM plan must be a JSON array")
+
+    normalized = []
+    for index, item in enumerate(value, start=start_at):
+        if not isinstance(item, dict):
+            raise ValueError(f"Plan step {index} must be a JSON object")
+
+        step = dict(item)
+        description = next(
+            (
+                str(step[field]).strip()
+                for field in DESCRIPTION_FIELDS
+                if step.get(field) is not None and str(step[field]).strip()
+            ),
+            "",
+        )
+        if not description and step.get("command"):
+            description = str(step["command"]).strip()
+        if not description:
+            raise ValueError(
+                f"Plan step {index} is missing a description "
+                f"(accepted fields: {', '.join(DESCRIPTION_FIELDS)})"
+            )
+
+        step_type = str(step.get("type", "")).strip().lower()
+        type_aliases = {
+            "shell": "command",
+            "cmd": "command",
+            "python": "script",
+            "execute": "command",
+            "edit": "code",
+        }
+        step_type = type_aliases.get(step_type, step_type)
+        if not step_type:
+            if step.get("command"):
+                step_type = "command"
+            elif step.get("filename") or step.get("code"):
+                step_type = "script"
+            elif step.get("files"):
+                step_type = "code"
+            else:
+                step_type = "analysis"
+        if step_type not in PLAN_STEP_TYPES:
+            raise ValueError(
+                f"Plan step {index} has unsupported type {step_type!r}; "
+                f"expected one of {sorted(PLAN_STEP_TYPES)}"
+            )
+
+        step["step"] = index
+        step["type"] = step_type
+        step["description"] = description
+        if step_type == "script" and not step.get("filename"):
+            step["filename"] = f"step_{index}.py"
+        normalized.append(step)
+
+    if not normalized:
+        raise ValueError("LLM returned an empty plan")
+    return normalized
+
+
 def chat(
     messages: list[dict],
     temperature: float = 0.2,
@@ -136,6 +225,53 @@ def chat(
     return answer if answer else full_text
 
 
+def _request_json(
+    messages: list[dict],
+    expected_type: type,
+    *,
+    label: str,
+    max_tokens: int,
+    total_timeout: int | None = None,
+):
+    """Request structured output and retry once with a compact repair prompt."""
+    raw = chat(
+        messages,
+        temperature=0.1,
+        label=label,
+        max_tokens=max_tokens,
+        total_timeout=total_timeout,
+    )
+    try:
+        return _extract_json(raw, expected_type)
+    except ValueError as first_error:
+        repair_messages = [
+            *messages,
+            {"role": "assistant", "content": raw[-4000:]},
+            {
+                "role": "user",
+                "content": (
+                    "/no_think\n"
+                    "Your previous response was invalid or truncated. Return it again as "
+                    "complete, compact JSON only. Keep descriptions and reasons concise."
+                ),
+            },
+        ]
+        repaired = chat(
+            repair_messages,
+            temperature=0.0,
+            label=f"{label} repair",
+            max_tokens=min(max_tokens, 1024),
+            total_timeout=total_timeout,
+        )
+        try:
+            return _extract_json(repaired, expected_type)
+        except ValueError as repair_error:
+            raise ValueError(
+                f"{label} returned invalid JSON twice. "
+                f"First error: {first_error}; repair error: {repair_error}"
+            ) from repair_error
+
+
 def make_plan(
     task: str,
     project_path: str,
@@ -176,6 +312,7 @@ def make_plan(
                 "Prefer 'script' for data analysis and parameter sweeps. "
                 "Group related sweeps into ONE script step per parameter (not one per symbol). "
                 "Use standard Linux/bash commands. "
+                "Every step MUST contain step, type, and description. "
                 "Return ONLY a JSON array of steps, no explanation.\n"
                 "script example: {\"step\":1,\"type\":\"script\","
                 "\"description\":\"Sweep KEY_LEVEL_OFFSET 0.03-0.12 for BTC/SOL/BNB, save CSV to results/\","
@@ -193,18 +330,14 @@ def make_plan(
             ),
         },
     ]
-    raw = chat(
+    value = _request_json(
         messages,
-        temperature=0.1,
+        list,
         label="Generating plan",
         max_tokens=PLAN_MAX_TOKENS,
         total_timeout=PLAN_TOTAL_TIMEOUT,
     )
-    start = raw.find("[")
-    end = raw.rfind("]") + 1
-    if start == -1 or end == 0:
-        raise ValueError(f"LLM 没有返回有效的 JSON plan:\n{raw}")
-    return json.loads(raw[start:end])
+    return _normalize_plan_steps(value)
 
 
 def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[dict]) -> list[dict]:
@@ -246,17 +379,16 @@ def expand_analysis(task: str, step: dict, context: list[dict], remaining: list[
             ),
         },
     ]
-    raw = chat(
+    value = _request_json(
         messages,
-        temperature=0.1,
+        list,
         label="Expanding analysis",
         max_tokens=ANALYSIS_MAX_TOKENS,
     )
-    start = raw.find("[")
-    end = raw.rfind("]") + 1
-    if start == -1 or end == 0:
-        return []
-    return json.loads(raw[start:end])
+    return _normalize_plan_steps(
+        value,
+        start_at=int(step.get("step", 1)),
+    )
 
 
 def analyze_result(
@@ -308,17 +440,29 @@ def analyze_result(
             ),
         },
     ]
-    raw = chat(
+    decision = _request_json(
         messages,
-        temperature=0.1,
+        dict,
         label="Analyzing result",
         max_tokens=ANALYSIS_MAX_TOKENS,
     )
-    start = raw.find("{")
-    end = raw.rfind("}") + 1
-    if start == -1 or end == 0:
-        return {"action": "next", "reason": "无法解析分析结果，继续下一步"}
-    return json.loads(raw[start:end])
+    action = str(decision.get("action", "")).strip().lower()
+    if action not in {"next", "retry", "update_plan", "done", "fail"}:
+        raise ValueError(f"LLM returned unsupported analysis action: {action!r}")
+    decision["action"] = action
+    decision["reason"] = str(decision.get("reason", "")).strip()
+
+    if action == "retry" and decision.get("updated_step"):
+        decision["updated_step"] = _normalize_plan_steps(
+            [decision["updated_step"]],
+            start_at=int(step.get("step", 1)),
+        )[0]
+    if action == "update_plan":
+        decision["updated_steps"] = _normalize_plan_steps(
+            decision.get("updated_steps", []),
+            start_at=int(step.get("step", 1)) + 1,
+        )
+    return decision
 
 
 def generate_script(
@@ -347,11 +491,11 @@ def generate_script(
             "content": (
                 "You are a Python expert running in a Linux Docker container. "
                 "Write a SHORT, self-contained Python script that fulfills the given task. "
-                "CRITICAL: import and reuse the existing project modules (strategy, backtest, "
-                "robustness_a_class_runner) — do NOT reimplement their logic. "
-                "Follow the pattern in robustness_a_class_runner.py: "
-                "patch strategy.PARAM = value, call the backtest function, restore params. "
-                "The script must be under 150 lines. Keep it minimal. "
+                "Reuse relevant existing project modules when they are present in the supplied "
+                "files, but do not assume domain-specific modules exist. "
+                "Prefer the Python standard library for simple parsing and reporting. "
+                "Do not install packages from inside the generated script. "
+                "The script must be under 150 lines and syntactically complete. "
                 "Save output CSV/markdown to the paths mentioned in the task. "
                 "Print a summary table at the end. "
                 "Return ONLY the Python code, no explanation, no markdown fences."

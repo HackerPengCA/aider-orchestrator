@@ -24,7 +24,7 @@ LLM_TOTAL_TIMEOUT = 180       # analysis/expand calls
 PLAN_TOTAL_TIMEOUT = 600      # plan generation with inline scripts can be long
 PLAN_MAX_TOKENS = 1024   # plan is high-level only; scripts are generated at execution time
 SCRIPT_MAX_TOKENS = 4096  # per-script code generation
-ANALYSIS_MAX_TOKENS = 1024
+ANALYSIS_MAX_TOKENS = 2048
 
 # Aider subprocess timeout (code generation can be very slow on local LLM)
 AIDER_TIMEOUT = 900

@@ -37,7 +37,6 @@ def read_key_files(sandbox: Sandbox, file_list: list[str]) -> dict[str, str]:
     """
     PRIORITY_NAMES = {
         "config.py", "settings.py", "constants.py",
-        "strategy.py", "backtest.py",
         "main.py", "app.py", "server.py",
         "readme.md", "README.md",
     }

@@ -93,5 +93,19 @@ class PlanNormalizationTests(unittest.TestCase):
         self.assertEqual(decision["updated_step"]["filename"], "step_3.py")
 
 
+class ScriptPromptTests(unittest.TestCase):
+    @patch.object(llm_client, "chat", return_value="print('ok')")
+    def test_script_prompt_has_no_quant_project_assumptions(self, chat):
+        llm_client.generate_script(
+            "Inspect JavaScript bundles for checksum logic",
+            {"README.md": "Website capture analysis"},
+        )
+
+        system_prompt = chat.call_args.args[0][0]["content"]
+        self.assertNotIn("strategy", system_prompt.lower())
+        self.assertNotIn("backtest", system_prompt.lower())
+        self.assertIn("Never import a project-local module", system_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

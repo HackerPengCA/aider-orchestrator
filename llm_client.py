@@ -282,7 +282,7 @@ def make_plan(
     让 LLM 把任务拆成有序步骤，返回 plan 列表。
     file_contents: {相对路径: 文件内容}，注入小型关键文件供 LLM 直接阅读。
     步骤类型：
-      script   — LLM 直接写完整 Python 脚本（数据分析/参数扫描首选）
+      script   — LLM 直接写完整 Python 脚本
       code     — 调用 Aider 修改现有文件（仅用于改已有代码）
       command  — 执行 shell 命令
       analysis — 分析前序输出，动态生成后续步骤
@@ -309,8 +309,7 @@ def make_plan(
                 "  'code'    — modify existing source files via Aider. Include 'files' array.\n"
                 "  'command' — run a shell command. Include 'command' string.\n"
                 "  'analysis'— analyze prior outputs and decide next steps.\n"
-                "Prefer 'script' for data analysis and parameter sweeps. "
-                "Group related sweeps into ONE script step per parameter (not one per symbol). "
+                "Prefer 'script' for standalone data processing, inspection, and reporting. "
                 "Use standard Linux/bash commands. "
                 "Every step MUST contain step, type, and description. "
                 "Return ONLY a JSON array of steps, no explanation.\n"
@@ -493,6 +492,8 @@ def generate_script(
                 "Write a SHORT, self-contained Python script that fulfills the given task. "
                 "Reuse relevant existing project modules when they are present in the supplied "
                 "files, but do not assume domain-specific modules exist. "
+                "Never import a project-local module unless it appears in the supplied project "
+                "files or is explicitly named in the task. "
                 "Prefer the Python standard library for simple parsing and reporting. "
                 "Do not install packages from inside the generated script. "
                 "The script must be under 150 lines and syntactically complete. "
